@@ -7,26 +7,37 @@
 ;
 ; scans twi bus for pcf8574 extension
 ; Use pcf8574A quasi-bidirectional twi(i2c) extension
+; bus pulled-up with 8k2 (2k2 take a walk)
 ; Led D7 signals any twi error.
 ;
-; Checks a button via twi extension
-; and turns a led if it holds
+; Checks a button via twi extension and turns a led
+; "Lord, help us"
 
 #include <avr/io.h>
 
 #undef  __SFR_OFFSET
-#define __SFR_OFFSET 0
-#define START 	  0x08
-#define REP_START 0x10
-#define SLAW_ACK  0x18
-#define SLAW_NACK 0x20
-#define DATA_ACK  0x28
-#define DATA_NACK 0x30
+#define __SFR_OFFSET  0
+#define START 	   0x08
+#define REP_START  0x10
+#define SLAW_ACK   0x18
+#define DATAW_ACK  0x28
+#define SLAR_ACK   0x40
+#define DATAR_ACK  0x50
+#define DATAR_NACK 0x58
+
+#define P0 0
+#define P1 1
+#define P2 2
+#define P3 3
+#define P4 4
+#define P5 5
+#define P6 6
+#define P7 7
 
 temp    = 16			; common reg
-counter = 17			; delay counter reg
-address = 19			; twi address reg
-data    = 20			; twi data reg
+counter = 17			; delay reg
+address = 18			; twi address reg
+data    = 19			; twi mirror reg
 
 .section .text			; code section
 .global __vector_default        ;
@@ -41,39 +52,59 @@ main:				;
         brne main1              ; pcf answered
 	rcall error		; error led
 	main1:			; main main )
-	rcall pcf_init		; R
-	rcall pcf_led_on_off	; blink led P7 pcf8574
+	rcall pcf_init		; small p-u all pins
+	rcall pcf_read_button	; and press
 	loop:			;
 	rjmp loop		; waste a time
 ret				;
 
-pcf_led_on_off:			;
-	pcfled:			;
-	sbr data, 1<<3		; P7 p-u (off)
-	rcall twi_start		;
-	rcall twi_sla_w		;
-	rcall twi_data_w	;
-        rcall twi_stop          ;
-        rcall delay_1s          ; delay
+pcf_read_button:                ;
+	sbr data, 1<<P7		; led pin pull-up (off)
+        sbr data, 1<<P6         ; button pin pull-up (may be pulledd down with a button)
+	rcall pcf_write		; a new state
+	prb:			;
+        rcall pcf_read          ; first read 1 but after one press is always 0
+        sbrc data, P6           ; skip if pulled up
+        rjmp prb               	;
+        rcall pcf_led_on        ; led on if pulled down
+	rcall delay_1s		;
+        rcall pcf_led_off       ; led off
+ret                             ;
+
+pcf_led_off:                    ;
+        sbr data, 1<<P7         ; P7 p-u (off)
+	rcall pcf_write		;
+ret                             ;
+
+pcf_led_on:                     ;
+        cbr data, 1<<P7         ; P7 sink (on)
+        rcall pcf_write         ;
+ret                             ;
+
+pcf_write:			;
         rcall twi_start         ;
         rcall twi_sla_w         ;
-        cbr data, 1<<3          ; P7 sink (on)
-        rcall twi_data_w        ;
+        rcall twi_data_w        ; data >> TWDR
         rcall twi_stop          ;
-        rcall delay_1s          ; delay
-	rjmp pcf_led_on_off	;
 ret				;
 
-pcf_init:			; R (no sink)
+pcf_read:                       ;
+        rcall twi_start         ;
+        rcall twi_sla_r         ;
+        rcall twi_data_r        ; data << TWDR
+        rcall twi_stop          ;
+ret                             ;
+
+pcf_init:			; all 00000000 (sink)
         rcall twi_start         ;
         rcall twi_sla_w         ;
-	ser data		;
+	clr data		; 0x00
 	rcall twi_data_w	;
         rcall twi_stop          ;
 ret				;
 
 twi_scan:			;
-	ldi address, 127	; will step backward
+	ldi address, 127	; goes down
 	twscan1:		;
 	rcall twi_start		; start/rep_start
 	rcall twi_sla_w		; slave addres + w
@@ -88,26 +119,58 @@ twi_scan:			;
 	rcall twi_stop		;
 ret				;
 
+twi_data_r:                                     ;
+        ldi temp, ((1<<TWINT)|(1<<TWEN))        ; reset flag
+        out TWCR, temp                          ; +nack
+        tdr1:                                   ;
+        in temp, TWCR                           ; check if
+        sbrs temp, TWINT                        ; flag set?
+        rjmp tdr1                               ; not yet, repeat
+	in data, TWDR				; got data
+ret                                             ;
+
 twi_data_w:					;
-	mov temp, data				;
-	out TWDR, temp				; data
+        tdw1:                                   ;
+        in temp, TWCR                           ;
+        sbrs temp, TWINT                        ; ready?
+        rjmp tdw1                               ; not yet, repeat
+	out TWDR, data				; data
 	ldi temp, ((1<<TWINT)|(1<<TWEN))	;
 	out TWCR, temp				; go
-	tdw1:					;
+	tdw2:					;
 	in temp, TWCR				;
 	sbrs temp, TWINT			; sent?
-	rjmp tdw1				; not yet, repeat
-	in temp, TWSR				; ok, read status
+	rjmp tdw2				; not yet, repeat
+	in temp, TWSR				; check status
 	andi temp, 0xF8				;
-	cpi temp, DATA_ACK			;
-	breq tdw2				; ok
+	cpi temp, DATAW_ACK			; 0x28
+	breq tdw3				; ok
         rcall error	                        ; led
-	tdw2:					;
+	tdw3:					;
 ret						;
+
+twi_sla_r:                                      ;
+        mov temp, address                       ; slave address (e.g. 0x3F as pcf of mine)
+        lsl temp                                ; <<address + 0, R/W = W
+	ori temp, 0x01				; +1, R/W = R
+        out TWDR, temp                          ;
+        ldi temp, ((1<<TWINT)|(1<<TWEN))        ;
+        out TWCR, temp                          ; go
+        slar1:                                  ;
+        in temp, TWCR                           ;
+        sbrs temp, TWINT                        ; sent
+        rjmp slar1                              ;
+        in temp, TWSR                           ; read status
+        andi temp, 0xF8                         ;
+        cpi temp, SLAR_ACK                      ; 0x40
+        breq slar2                              ; acked
+        rcall error                             ;
+        slar2:                                  ;
+ret                                             ;
 
 twi_sla_w:					;
 	mov temp, address			; slave address (e.g. 0x3F as pcf of mine)
-	lsl temp				; address<<  + 0, R/W = W
+	lsl temp				; <<address + 0, R/W = W
 	out TWDR, temp				;
 	ldi temp, ((1<<TWINT)|(1<<TWEN))	;
 	out TWCR, temp				; go
@@ -117,8 +180,8 @@ twi_sla_w:					;
         rjmp slaw1                              ;
         in temp, TWSR                           ; read status
         andi temp, 0xF8                         ;
-        cpi temp, SLAW_ACK                      ;
-	breq slaw2				; acked (stay temp untouched)
+        cpi temp, SLAW_ACK                      ; 0x18
+	breq slaw2				; acked (stay temp untouched if scanned)
 	;rcall error				; uncomment if used w/o autodetect
 	ser temp				; else (temp=0xFF)
 	slaw2:					;
@@ -133,9 +196,9 @@ twi_start:						;
         rjmp start1                                     ;
 	in temp, TWSR					; read status
 	andi temp, 0xF8					;
-	cpi temp, START					; start acked?
+	cpi temp, START					; start acked? 0x08
 	breq start2					;
-        cpi temp, REP_START                             ;
+        cpi temp, REP_START                             ; 0x10
         breq start2                                     ; maybe rep. acked?
 	rcall error					; error led
 	start2:						;
@@ -154,15 +217,6 @@ twi_init:			; 100 kHz @4MHz clock
 	out TWSR, temp		;
 ret				;
 
-timer_init:			; TIMER0 (65 ms @4MHz)
-        ldi temp, (1<<CS00)     ;
-        ori temp, (1<<CS02)     ;
-        out TCCR0, temp         ;
-        ldi temp, (1<<TOIE0)    ;
-        out TIMSK, temp         ;
-        sei                     ;
-ret				;
-
 error:  sbi DDRD, 7             ; D7 out
         sbi PORTD, 7            ; high
         err: rjmp err           ; privet medved
@@ -174,18 +228,27 @@ delay_1s:			;
 ret
 
 delay_500ms:			;
-        rcall delay_100us       ;
-        rcall delay_100us       ;
-        rcall delay_100us       ;
-        rcall delay_100us       ;
-	rcall delay_100us	;
+        rcall delay_100ms       ;
+        rcall delay_100ms       ;
+        rcall delay_100ms       ;
+        rcall delay_100ms       ;
+	rcall delay_100ms	;
 ret				;
 
-delay_100us:                    ;
+delay_100ms:                    ;
 	ldi counter, 4		;
 	delay:			;
         cpi counter, 0          ;
         brne delay              ;
+ret                             ;
+
+timer_init:                     ; TIMER0 (ovfl in 65 ms @4MHz)
+        ldi temp, (1<<CS00)     ;
+        ori temp, (1<<CS02)     ;
+        out TCCR0, temp         ;
+        ldi temp, (1<<TOIE0)    ;
+        out TIMSK, temp         ;
+        sei                     ;
 ret                             ;
 
 TIMER0_OVF_vect:                ;
@@ -193,7 +256,7 @@ TIMER0_OVF_vect:                ;
         push temp               ; save temp
         in temp, SREG           ; save SREG
         push temp		;
-        ldi temp, 155           ; 25 us
+        ldi temp, 159           ; (ovfl in 25 ms)
         out TCNT0, temp         ;
         subi counter, 1         ; delay counter--
         pop temp		;
