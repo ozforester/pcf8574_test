@@ -53,15 +53,15 @@ main:				;
 	rcall error		; error led
 	main1:			; main main )
 	rcall pcf_init		; small p-u all pins
-	rcall pcf_read_button	; and press
+	rcall pcf_read_button	; and press a button
 	loop:			;
 	rjmp loop		; waste a time
 ret				;
 
 pcf_read_button:                ;
 	sbr data, 1<<P7		; led pin pull-up (off)
-        sbr data, 1<<P6         ; button pin pull-up (may be pulledd down with a button)
-	rcall pcf_write		; a new state
+        sbr data, 1<<P6         ; button pin pull-up (may be pulled down with a button)
+	rcall pcf_write		; write a new state
 	prb:			;
         rcall pcf_read          ; first read 1 but after one press is always 0
         sbrc data, P6           ; skip if pulled up
@@ -69,6 +69,7 @@ pcf_read_button:                ;
         rcall pcf_led_on        ; led on if pulled down
 	rcall delay_1s		;
         rcall pcf_led_off       ; led off
+	rjmp pcf_read_button	;
 ret                             ;
 
 pcf_led_off:                    ;
@@ -126,7 +127,7 @@ twi_data_r:                                     ;
         in temp, TWCR                           ; check if
         sbrs temp, TWINT                        ; flag set?
         rjmp tdr1                               ; not yet, repeat
-	in data, TWDR				; got data
+	in data, TWDR				; data<-
 ret                                             ;
 
 twi_data_w:					;
@@ -134,7 +135,7 @@ twi_data_w:					;
         in temp, TWCR                           ;
         sbrs temp, TWINT                        ; ready?
         rjmp tdw1                               ; not yet, repeat
-	out TWDR, data				; data
+	out TWDR, data				; data->
 	ldi temp, ((1<<TWINT)|(1<<TWEN))	;
 	out TWCR, temp				; go
 	tdw2:					;
