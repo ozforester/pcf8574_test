@@ -11,7 +11,6 @@
 ; Led D7 signals any twi error.
 ;
 ; Checks a button via twi extension and turns a led
-; "Lord, help us"
 
 #include <avr/io.h>
 
@@ -69,7 +68,7 @@ pcf_read_button:                ;
         rcall pcf_led_on        ; led on if pulled down
 	rcall delay_1s		;
         rcall pcf_led_off       ; led off
-	rjmp pcf_read_button	;
+        rjmp pcf_read_button    ; loop
 ret                             ;
 
 pcf_led_off:                    ;
@@ -121,8 +120,8 @@ twi_scan:			;
 ret				;
 
 twi_data_r:                                     ;
-        ldi temp, ((1<<TWINT)|(1<<TWEN))        ; reset flag
-        out TWCR, temp                          ; +nack
+        ldi temp, ((1<<TWINT)|(1<<TWEN))        ; reset flag +nack
+        out TWCR, temp                          ;
         tdr1:                                   ;
         in temp, TWCR                           ; check if
         sbrs temp, TWINT                        ; flag set?
@@ -268,4 +267,7 @@ reti                            ;
 
 __vector_default:	reti	;
 
+; "Lord, help us"
+
 .end
+
